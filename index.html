@@ -3840,7 +3840,7 @@
         function closeVoucherModal() { document.getElementById('voucher-modal').classList.add('hidden'); }
 
         // 標準橫向四格簽章欄 HTML 生成器 (100% 採用原生雙列四欄 <table>，徹底杜絕垂直疊加問題)
-        function buildHorizontalSignatureTableHTML(col1 = '製表 / 承辦人', col2 = '複核 / 督導', col3 = '單位主管', col4 = '主計 / 會計室', boxHeight = 68) {
+        function buildHorizontalSignatureTableHTML(col1 = '承辦人', col2 = '主管', col3 = '主計', col4 = '首長', boxHeight = 68) {
             return `
                 <table style="width:100%; border-collapse:collapse; margin-top:16px; table-layout:fixed; page-break-inside:avoid; background:#ffffff;">
                     <thead>
@@ -3934,7 +3934,7 @@
                         </tfoot>
                     </table>
 
-                    ${buildHorizontalSignatureTableHTML('申請人簽章', '承辦 / 輔導員核章', '單位主管核章', '主計 / 會計核章', 74)}
+                    ${buildHorizontalSignatureTableHTML('申請人', '承辦人', '主管', '主計', 74)}
                 </div>
             `;
         }
@@ -4198,7 +4198,7 @@
                             </tfoot>
                         </table>
 
-                        ${buildHorizontalSignatureTableHTML('製表 / 承辦人', '複核 / 督導', '單位主管', '主計 / 會計室', 64)}
+                        ${buildHorizontalSignatureTableHTML('承辦人', '主管', '主計', '首長', 64)}
                     </div>
                 `;
             }
@@ -4270,7 +4270,7 @@
                         </tfoot>
                     </table>
 
-                    ${buildHorizontalSignatureTableHTML('製表 / 承辦人', '複核 / 督導', '單位主管', '主計 / 會計室', 64)}
+                    ${buildHorizontalSignatureTableHTML('承辦人', '主管', '主計', '首長', 64)}
                 </div>
             `;
         }
@@ -5711,19 +5711,52 @@
             renderMainTable();
         }
 
-        // 使用 text/plain 傳送 POST，避免瀏覽器觸發 CORS OPTIONS 預檢請求（Google Apps Script 標準作法）
+        // 使用 text/plain 傳送 POST + credentials: 'omit'，避免瀏覽器觸發 CORS 預檢或因登入多個 Google 帳號導致轉址阻擋
         async function callAppsScriptAPI(action, data = null) {
             const cfg = getCloudSettings();
-            if (!cfg.url || !cfg.passcode) throw new Error('尚未設定雲端網址與通行碼');
+            const cleanUrl = String(cfg.url || '').trim();
+            if (!cleanUrl || !cfg.passcode) throw new Error('尚未設定雲端網址與通行碼');
+            if (cleanUrl.endsWith('/dev')) {
+                throw new Error('網址結尾不可為 /dev（測試網址），請複製「管理部署作業」中以 /exec 結尾的正式網頁應用程式網址');
+            }
+            if (!cleanUrl.includes('script.google.com/macros/s/')) {
+                throw new Error('網址格式不正確，請確認為 https://script.google.com/macros/s/.../exec');
+            }
 
-            const res = await fetch(cfg.url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                body: JSON.stringify({ action, passcode: cfg.passcode, data }),
-                redirect: 'follow'
-            });
+            let res;
+            try {
+                res = await fetch(cleanUrl, {
+                    method: 'POST',
+                    mode: 'cors',
+                    credentials: 'omit',
+                    cache: 'no-store',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify({ action, passcode: cfg.passcode, data }),
+                    redirect: 'follow'
+                });
+            } catch (networkErr) {
+                const box = document.getElementById('cloud-verify-box');
+                const sumEl = document.getElementById('cloud-verify-summary');
+                const detEl = document.getElementById('cloud-verify-detail');
+                if (box && sumEl && detEl) {
+                    box.className = 'p-3.5 rounded-xl bg-rose-50 border-2 border-rose-300 text-rose-950 space-y-1.5';
+                    sumEl.textContent = '❌ 連線被拒 (Failed to fetch)：Google Apps Script 尚未授權或部署權限設定有誤';
+                    detEl.innerHTML = `請在 Google Apps Script 畫面依序檢查以下 3 點（30 秒即可修復）：<br>
+                    1. <strong>先執行一次授權</strong>：在 Apps Script 頂端選單將 <code>doPost</code> 改選為 <code>readDatabase</code> 或按上方「<strong>▷ 執行</strong>」，若跳出「需要授權」請點「審查權限 → 點你的帳號 → 進階 → 前往 Github_機車 (不安全) → 允許」。<br>
+                    2. <strong>確認部署權限為「所有人」</strong>：點右上角「<strong>部署 → 新增部署作業</strong>」，執行身分選「<strong>我</strong>」，<strong>誰可以存取務必選「所有人 (Anyone)」</strong>（若選到「僅限自己」或「有 Google 帳戶的人」就會出現 Failed to fetch）。<br>
+                    3. <strong>複製新產生的 <code>/exec</code> 網址</strong>貼回下方第 1 欄，再點「儲存設定並立即測試同步」。`;
+                }
+                throw new Error('Failed to fetch（請看視窗上方紅色框的 3 步驟排除教學：檢查 Apps Script 授權與「誰可以存取：所有人」）');
+            }
+
             if (!res.ok) throw new Error(`HTTP 錯誤 (${res.status})`);
-            const json = await res.json();
+            const text = await res.text();
+            let json;
+            try {
+                json = JSON.parse(text);
+            } catch (parseErr) {
+                throw new Error('雲端回傳非 JSON 頁面，請確認 Apps Script「誰可以存取」已設為「所有人」並已按 Ctrl+S 儲存後重新部署');
+            }
             if (!json.ok) throw new Error(json.error || '雲端回傳未知錯誤');
             return json;
         }
